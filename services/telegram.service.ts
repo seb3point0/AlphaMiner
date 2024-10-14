@@ -28,20 +28,29 @@ export class TelegramService implements OnModuleInit {
   private async handleMessage(ctx: any) {
     try {
       const message = toMarkdownV2(ctx.message).replace(/\\([^\\])/g, '$1');
-      const prompt = await this.promptService.getPrompt('analysis');
-      const content = `${prompt} [${message}]`;
+      const promptMessages = await this.promptService.getPrompt('analysis');
+      
+      promptMessages.user = (promptMessages.user || '') + ` [${message}]`;
 
-      this.logger.log('Processing message...');
-      await ctx.reply('AI processing message...');
+      await this.replyHandler('✨ Processing blurb with AI ✨', ctx);
 
       try {
-        const chat = await this.openAIService.createChatCompletion(content);
-        this.logger.log('ChatGPT response received: ' + chat.choices[0].message.content);
+        const chat = await this.openAIService.createChatCompletion(
+          Object.entries(promptMessages).map(([role, content]) => ({
+            role: role as 'system' | 'user' | 'assistant',
+            content
+          }))
+        );
 
-        const companies = JSON.parse(chat.choices[0].message.content);
+        const content = chat.choices[0].message.content;
+        await this.replyHandler('ChatGPT response received: ' + content);
+
+        const companies = JSON.parse(this.cleanAndValidateJSON(content));
+
+        await this.replyHandler('Clean JSON: ' + companies);
 
         // Send a message indicating the number of companies detected
-        await ctx.reply(`${companies.length} companies detected. Processing...`);
+        await this.replyHandler(`${companies.length} companies detected. Processing...`, ctx);
 
         let notionObjects = [];
 
@@ -52,17 +61,58 @@ export class TelegramService implements OnModuleInit {
 
         const responseMessage = this.createResponseMessage(notionObjects);
 
-        await ctx.reply(responseMessage);
+        await this.replyHandler(responseMessage, ctx);
 
-        this.logger.log('Response sent to Telegram');
       } catch (error) {
         console.error(error);
-        await ctx.reply('An error occurred while processing the companies. Please try again later.');
+        await this.replyHandler('An error occurred while processing the companies. Please try again later.', ctx);
       }
     } catch (error) {
       console.error('Error in handleMessage:', error);
-      await ctx.reply('An error occurred while processing your message. Please try again later.');
+      await this.replyHandler('An error occurred while processing your message. Please try again later.', ctx);
     }
+  }
+
+  private cleanAndValidateJSON(jsonString: string): string {
+    // Remove markdown codeblock tags
+    let cleanedJSON = jsonString.replace(/^```json\s*|\s*```$/g, '').trim();
+
+    try {
+      let parsedJSON = JSON.parse(cleanedJSON);
+      parsedJSON = this.removeUnwantedValues(parsedJSON, ['na', 'N/A', 'not applicable', 'none', 'null', 'undefined']);
+
+      // If the response is an object, add it to an array
+      if (!Array.isArray(parsedJSON)) {
+        parsedJSON = [parsedJSON];
+      }
+
+      return JSON.stringify(parsedJSON);
+    } catch (error) {
+      this.logger.error('Error parsing JSON:', error);
+      return '[]';
+    }
+  }
+
+  private removeUnwantedValues(obj: any, valuesToRemove: string[]): any {
+    if (Array.isArray(obj)) {
+      return obj.map(v => this.removeUnwantedValues(v, valuesToRemove)).filter(v => v !== undefined);
+    } else if (typeof obj === 'object' && obj !== null) {
+      return Object.fromEntries(
+        Object.entries(obj)
+          .map(([k, v]) => [k, this.removeUnwantedValues(v, valuesToRemove)])
+          .filter(([_, v]) => v !== undefined && !this.isUnwantedValue(v, valuesToRemove))
+      );
+    } else if (this.isUnwantedValue(obj, valuesToRemove)) {
+      return undefined;
+    }
+    return obj;
+  }
+
+  private isUnwantedValue(value: any, valuesToRemove: string[]): boolean {
+    if (typeof value === 'string') {
+      return valuesToRemove.includes(value.toLowerCase()) || value === '' || value === '[]' || value === '{}';
+    }
+    return value === null || value === undefined;
   }
 
   private createResponseMessage(notionObjects: any[]): string {
@@ -73,5 +123,15 @@ export class TelegramService implements OnModuleInit {
       responseMessage += `- ${companyName}: ${companyUrl}\n`;
     }
     return responseMessage;
+  }
+
+  // New method to handle reply and logging
+  private async replyHandler(message: string, ctx?: any): Promise<void> {
+    this.logger.log(`Message: ${message}`);
+    
+    if (ctx) {
+      await ctx.reply(message);
+      this.logger.log(`Sent to Telegram: ${message}`);
+    }
   }
 }

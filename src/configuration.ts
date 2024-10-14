@@ -9,4 +9,5 @@ export default () => ({
   docsendEmail: process.env.DOCSEND_EMAIL,
   promptsDir: path.join(process.cwd(), 'src', 'prompts'),
   screenshotsDir: path.join(process.cwd(), 'src', 'screenshots'),
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-3.5-turbo-0125',
 });
